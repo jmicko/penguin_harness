@@ -85,6 +85,7 @@ fn call_tool(params: Option<Value>) -> Result<Value, Value> {
     let outcome =
         match call.name.as_str() {
             "check_environment" => ok_text(actions::check_environment()),
+            "list_sessions" => ok_text_result(crate::session::list()),
             "launch_app" => typed::<LaunchRequest>(args)
                 .and_then(|request| ok_text(actions::launch_app(request)?)),
             "launch_terminal" => typed::<TerminalRequest>(args)
@@ -420,6 +421,14 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "check_environment",
             "Report X11, XTEST, screenshot, and isolation dependencies.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        tool(
+            "list_sessions",
+            "List sessions launched and tracked by Penguin Harness.",
             json!({
                 "type": "object",
                 "properties": {}

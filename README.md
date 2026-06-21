@@ -148,6 +148,7 @@ Coordinates for `click`, `double-click`, `drag`, and `scroll` are relative to th
 The server exposes:
 
 - `check_environment`
+- `list_sessions`
 - `launch_app`
 - `launch_terminal`
 - `list_windows`
@@ -175,7 +176,7 @@ The server exposes:
 ## Practical Codex Flow
 
 1. Start with `check_environment`.
-2. Use `list_windows`, `find_windows`, or `launch_app` to identify the target.
+2. Use `list_sessions`, `list_windows`, `find_windows`, or `launch_app` to identify the target.
 3. Take a `screenshot` with `include_image: true`.
 4. Use screenshot-relative coordinates for clicks, drags, and scrolls.
 5. Verify visible state with another screenshot after each meaningful UI action.
