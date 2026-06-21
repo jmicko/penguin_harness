@@ -284,14 +284,18 @@ impl PortalController {
     pub fn press_key(&self, key: &str) -> Result<PortalActionResult> {
         self.runtime.block_on(async {
             let state = self.active_state()?;
-            if let Some(rest) = key
-                .strip_prefix("Ctrl-")
-                .or_else(|| key.strip_prefix("ctrl-"))
-            {
-                let ctrl = keysym_for_key("Control_L")?;
-                key_event(state, ctrl, KEY_PRESS).await?;
-                send_keysym(state, keysym_for_key(rest)?).await?;
-                key_event(state, ctrl, KEY_RELEASE).await?;
+            if let Some(chord) = key_chord(key)? {
+                for modifier in &chord.modifiers {
+                    keycode_event(state, *modifier, KEY_PRESS).await?;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                send_keycode(state, chord.keycode).await?;
+                for modifier in chord.modifiers.iter().rev() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    keycode_event(state, *modifier, KEY_RELEASE).await?;
+                }
+            } else if let Some(keycode) = keycode_for_key(key) {
+                send_keycode(state, keycode).await?;
             } else {
                 send_keysym(state, keysym_for_key(key)?).await?;
             }
@@ -313,6 +317,11 @@ struct PointerTarget {
     stream_node_id: u32,
     x: f64,
     y: f64,
+}
+
+struct KeyChord {
+    modifiers: Vec<i32>,
+    keycode: i32,
 }
 
 fn session_result(state: &PortalState) -> PortalSessionResult {
@@ -367,11 +376,26 @@ async fn send_keysym(state: &PortalState, keysym: i32) -> Result<()> {
     key_event(state, keysym, KEY_RELEASE).await
 }
 
+async fn send_keycode(state: &PortalState, keycode: i32) -> Result<()> {
+    keycode_event(state, keycode, KEY_PRESS).await?;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    keycode_event(state, keycode, KEY_RELEASE).await
+}
+
 async fn key_event(state: &PortalState, keysym: i32, pressed: bool) -> Result<()> {
     state
         .manager
         .remote_desktop()
         .notify_keyboard_keysym(state.session.ashpd_session(), keysym, pressed)
+        .await
+        .map_err(Into::into)
+}
+
+async fn keycode_event(state: &PortalState, keycode: i32, pressed: bool) -> Result<()> {
+    state
+        .manager
+        .remote_desktop()
+        .notify_keyboard_keycode(state.session.ashpd_session(), keycode, pressed)
         .await
         .map_err(Into::into)
 }
@@ -433,6 +457,107 @@ fn keysym_for_key(key: &str) -> Result<i32> {
     Ok(keysym)
 }
 
+fn key_chord(key: &str) -> Result<Option<KeyChord>> {
+    let normalized = key.trim().to_ascii_lowercase().replace('_', "-");
+    let parts = normalized
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return Ok(None);
+    }
+
+    let (modifier_parts, key_part) = parts.split_at(parts.len() - 1);
+    let mut modifiers = Vec::new();
+    for modifier in modifier_parts {
+        let Some(keycode) = modifier_keycode(modifier) else {
+            return Ok(None);
+        };
+        modifiers.push(keycode);
+    }
+    let keycode = keycode_for_key(key_part[0])
+        .ok_or_else(|| anyhow!("unsupported portal key chord target {:?}", key_part[0]))?;
+    Ok(Some(KeyChord { modifiers, keycode }))
+}
+
+fn modifier_keycode(key: &str) -> Option<i32> {
+    match key {
+        "ctrl" | "control" => Some(29),
+        "shift" => Some(42),
+        "alt" => Some(56),
+        _ => None,
+    }
+}
+
+fn keycode_for_key(key: &str) -> Option<i32> {
+    let normalized = key.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "escape" | "esc" => Some(1),
+        "1" => Some(2),
+        "2" => Some(3),
+        "3" => Some(4),
+        "4" => Some(5),
+        "5" => Some(6),
+        "6" => Some(7),
+        "7" => Some(8),
+        "8" => Some(9),
+        "9" => Some(10),
+        "0" => Some(11),
+        "backspace" => Some(14),
+        "tab" => Some(15),
+        "q" => Some(16),
+        "w" => Some(17),
+        "e" => Some(18),
+        "r" => Some(19),
+        "t" => Some(20),
+        "y" => Some(21),
+        "u" => Some(22),
+        "i" => Some(23),
+        "o" => Some(24),
+        "p" => Some(25),
+        "enter" | "return" => Some(28),
+        "a" => Some(30),
+        "s" => Some(31),
+        "d" => Some(32),
+        "f" => Some(33),
+        "g" => Some(34),
+        "h" => Some(35),
+        "j" => Some(36),
+        "k" => Some(37),
+        "l" => Some(38),
+        "z" => Some(44),
+        "x" => Some(45),
+        "c" => Some(46),
+        "v" => Some(47),
+        "b" => Some(48),
+        "n" => Some(49),
+        "m" => Some(50),
+        "space" => Some(57),
+        "f1" => Some(59),
+        "f2" => Some(60),
+        "f3" => Some(61),
+        "f4" => Some(62),
+        "f5" => Some(63),
+        "f6" => Some(64),
+        "f7" => Some(65),
+        "f8" => Some(66),
+        "f9" => Some(67),
+        "f10" => Some(68),
+        "f11" => Some(87),
+        "f12" => Some(88),
+        "home" => Some(102),
+        "up" => Some(103),
+        "page-up" | "pageup" => Some(104),
+        "left" => Some(105),
+        "right" => Some(106),
+        "end" => Some(107),
+        "down" => Some(108),
+        "page-down" | "pagedown" => Some(109),
+        "delete" | "del" => Some(111),
+        _ => None,
+    }
+}
+
 fn evdev_button(button: MouseButton) -> i32 {
     match button {
         MouseButton::Left => 0x110,
@@ -458,4 +583,24 @@ fn ensure_png(path: &Path) -> Result<()> {
     image::open(path)
         .with_context(|| format!("read PNG {}", path.display()))
         .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{key_chord, keycode_for_key};
+
+    #[test]
+    fn portal_keycodes_cover_common_shortcuts() {
+        assert_eq!(keycode_for_key("Enter"), Some(28));
+        assert_eq!(keycode_for_key("s"), Some(31));
+        assert_eq!(keycode_for_key("F5"), Some(63));
+
+        let chord = key_chord("Ctrl-S").unwrap().unwrap();
+        assert_eq!(chord.modifiers, vec![29]);
+        assert_eq!(chord.keycode, 31);
+
+        let chord = key_chord("Ctrl-Shift-P").unwrap().unwrap();
+        assert_eq!(chord.modifiers, vec![29, 42]);
+        assert_eq!(chord.keycode, 25);
+    }
 }
