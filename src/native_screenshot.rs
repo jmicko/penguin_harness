@@ -1,9 +1,13 @@
 use crate::{env_check, screenshot as x11_screenshot, session};
 use anyhow::{Context, Result, anyhow, bail};
+use ashpd::desktop::screenshot::Screenshot;
 use image::GenericImageView;
 use serde::Serialize;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tokio::runtime::Builder;
+use url::Url;
 
 #[derive(Debug, Serialize)]
 pub struct NativeScreenshotCheck {
@@ -39,6 +43,11 @@ pub fn check() -> NativeScreenshotCheck {
                 detail: env_check::command_path("gnome-screenshot"),
             },
             ScreenshotBackendCheck {
+                name: "xdg_desktop_portal_screenshot".to_string(),
+                available: crate::env_check::check_portal().screenshot.available,
+                detail: Some("org.freedesktop.portal.Screenshot".to_string()),
+            },
+            ScreenshotBackendCheck {
                 name: "grim".to_string(),
                 available: env_check::command_path("grim").is_some(),
                 detail: env_check::command_path("grim"),
@@ -67,6 +76,11 @@ pub fn capture(include_cursor: bool) -> Result<NativeScreenshotResult> {
     .is_ok()
     {
         return result(path, "gnome_screenshot");
+    }
+
+    let path = session::timestamped_png_path("native-screen")?;
+    if portal_screenshot(&path).is_ok() {
+        return result(path, "xdg_desktop_portal_screenshot");
     }
 
     let path = session::timestamped_png_path("native-screen")?;
@@ -170,4 +184,41 @@ fn command_screenshot(command: &str, args: Vec<String>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn portal_screenshot(path: &Path) -> Result<()> {
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("create screenshot portal runtime")?;
+    let response = runtime.block_on(async {
+        let request = Screenshot::request()
+            .interactive(false)
+            .modal(false)
+            .send()
+            .await?;
+        let response = request.response()?;
+        Ok::<_, anyhow::Error>(response)
+    })?;
+    let source = file_uri_to_path(response.uri().as_str())?;
+    fs::copy(&source, path).with_context(|| {
+        format!(
+            "copy portal screenshot {} to {}",
+            source.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn file_uri_to_path(uri: &str) -> Result<PathBuf> {
+    let url = Url::parse(uri).with_context(|| format!("parse screenshot portal URI {uri}"))?;
+    if url.scheme() != "file" {
+        bail!(
+            "screenshot portal returned unsupported URI scheme {}",
+            url.scheme()
+        );
+    }
+    url.to_file_path()
+        .map_err(|_| anyhow!("screenshot portal URI is not a local path: {uri}"))
 }

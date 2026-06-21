@@ -197,7 +197,7 @@ fn xwayland_auth_candidates() -> Vec<String> {
     candidates
 }
 
-fn check_portal() -> PortalCheck {
+pub(crate) fn check_portal() -> PortalCheck {
     let mut check = PortalCheck {
         desktop_portal_binary: desktop_portal_binary(),
         ..PortalCheck::default()
