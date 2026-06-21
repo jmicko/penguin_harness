@@ -62,38 +62,49 @@ pub fn check() -> NativeScreenshotCheck {
 }
 
 pub fn capture(include_cursor: bool) -> Result<NativeScreenshotResult> {
-    let path = session::timestamped_png_path("native-screen")?;
+    let mut failures = Vec::new();
 
-    if gnome_shell_screenshot(&path, include_cursor).is_ok() {
-        return result(path, "gnome_shell_screenshot");
+    let path = session::timestamped_png_path("native-screen")?;
+    match gnome_shell_screenshot(&path, include_cursor) {
+        Ok(()) => return result(path, "gnome_shell_screenshot"),
+        Err(error) => failures.push(backend_failure("gnome_shell_screenshot", error)),
     }
 
     let path = session::timestamped_png_path("native-screen")?;
-    if command_screenshot(
+    match command_screenshot(
         "gnome-screenshot",
         gnome_screenshot_args(&path, include_cursor),
-    )
-    .is_ok()
-    {
-        return result(path, "gnome_screenshot");
+    ) {
+        Ok(()) => return result(path, "gnome_screenshot"),
+        Err(error) => failures.push(backend_failure("gnome_screenshot", error)),
     }
 
     let path = session::timestamped_png_path("native-screen")?;
-    if portal_screenshot(&path).is_ok() {
-        return result(path, "xdg_desktop_portal_screenshot");
+    match portal_screenshot(&path) {
+        Ok(()) => return result(path, "xdg_desktop_portal_screenshot"),
+        Err(error) => failures.push(backend_failure("xdg_desktop_portal_screenshot", error)),
     }
 
     let path = session::timestamped_png_path("native-screen")?;
-    if command_screenshot("grim", vec![path.display().to_string()]).is_ok() {
-        return result(path, "grim");
+    match command_screenshot("grim", vec![path.display().to_string()]) {
+        Ok(()) => return result(path, "grim"),
+        Err(error) => failures.push(backend_failure("grim", error)),
     }
 
     let path = session::timestamped_png_path("native-screen")?;
-    if x11_screenshot::capture_screen(&path).is_ok() {
-        return result(path, "x11_root");
+    match x11_screenshot::capture_screen(&path) {
+        Ok(_) => return result(path, "x11_root"),
+        Err(error) => failures.push(backend_failure("x11_root", error)),
     }
 
-    bail!("no native screenshot backend succeeded");
+    bail!(
+        "no native screenshot backend succeeded:\n{}",
+        failures.join("\n")
+    );
+}
+
+fn backend_failure(name: &str, error: anyhow::Error) -> String {
+    format!("{name}: {error:#}")
 }
 
 fn result(path: PathBuf, backend: &str) -> Result<NativeScreenshotResult> {

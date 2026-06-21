@@ -10,7 +10,7 @@ Penguin Harness has three desktop-control paths:
 
 - X11/Xwayland tools use XTEST for keyboard and mouse synthesis, native X11 screenshot capture, and EWMH/NetWM window-manager properties for window listing, focusing, resizing, and close requests.
 - Wayland portal tools use `xdg-desktop-portal` RemoteDesktop/ScreenCast permission flow for compositor-approved full-desktop control. `portal_start` tries to request persistent permission and stores the returned restore token under `~/.local/state/penguin-harness` when the compositor provides one. Some compositors, including GNOME in current testing, reject persistent RemoteDesktop sessions and require approval each time.
-- Native unattended tools use compositor-specific screenshot backends plus `/dev/uinput` virtual keyboard/mouse events. This is intended for dedicated machines where the operator explicitly trusts Penguin Harness to drive the desktop without prompts.
+- Native unattended tools use compositor-specific screenshot backends plus `/dev/uinput` virtual keyboard/mouse events. Pointer movement uses an absolute uinput device when screen size is known, with a relative fallback for desktops that reject absolute setup. This is intended for dedicated machines where the operator explicitly trusts Penguin Harness to drive the desktop without prompts.
 - Native Wayland windows are not visible to X11 tools. Use the `portal_*` tools for native Wayland apps.
 
 Run this first on a new machine:
@@ -83,7 +83,7 @@ That creates or updates only that repo's `.codex/config.toml`:
 [mcp_servers.penguin_harness]
 command = "/home/YOU/.local/bin/penguin-harness"
 args = ["mcp"]
-env_vars = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "PATH", "SHELL", "HOME"]
+env_vars = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "PATH", "SHELL", "HOME", "PENGUIN_HARNESS_SCREEN_SIZE"]
 startup_timeout_sec = 20
 tool_timeout_sec = 120
 default_tools_approval_mode = "prompt"
@@ -130,6 +130,12 @@ That installs a udev rule allowing the active graphical seat user to open `/dev/
 ```
 
 Membership in the `input` group is powerful: it can read and inject input. Use that only on machines you are comfortable dedicating to automation.
+
+Native pointer coordinates are screen pixels. Penguin Harness detects the screen size from `DISPLAY` when available and otherwise can infer it from the native screenshot backend. On unusual sessions, force the coordinate space explicitly:
+
+```bash
+export PENGUIN_HARNESS_SCREEN_SIZE=1920x1080
+```
 
 ## CLI Examples
 
