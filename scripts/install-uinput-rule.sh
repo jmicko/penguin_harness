@@ -3,8 +3,10 @@ set -euo pipefail
 
 add_user_to_input=false
 target_user="${SUDO_USER:-${USER:-}}"
+original_args=("$@")
 
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+  arg="$1"
   case "$arg" in
     --add-user-to-input)
       add_user_to_input=true
@@ -12,9 +14,17 @@ for arg in "$@"; do
     --user=*)
       target_user="${arg#--user=}"
       ;;
+    --user)
+      shift
+      if [[ $# -eq 0 ]]; then
+        echo "--user requires a username" >&2
+        exit 2
+      fi
+      target_user="$1"
+      ;;
     -h|--help)
       cat <<'USAGE'
-Usage: install-uinput-rule.sh [--add-user-to-input] [--user=USERNAME]
+Usage: install-uinput-rule.sh [--add-user-to-input] [--user USERNAME|--user=USERNAME]
 
 Installs /etc/udev/rules.d/70-penguin-harness-uinput.rules so the active
 graphical seat user can open /dev/uinput.
@@ -23,7 +33,7 @@ Options:
   --add-user-to-input  Also add USERNAME to the input group. This is useful for
                        dedicated/headless machines, but it is a broad trust
                        grant: input group members can read/inject input.
-  --user=USERNAME      User to add when --add-user-to-input is supplied.
+  --user USERNAME      User to add when --add-user-to-input is supplied.
 USAGE
       exit 0
       ;;
@@ -32,10 +42,11 @@ USAGE
       exit 2
       ;;
   esac
+  shift
 done
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-  exec sudo "$0" "$@"
+  exec sudo "$0" "${original_args[@]}"
 fi
 
 rule_path="/etc/udev/rules.d/70-penguin-harness-uinput.rules"
