@@ -6,7 +6,8 @@ use ashpd::desktop::screencast::CursorMode;
 use ashpd::desktop::screenshot::Screenshot;
 use image::GenericImageView;
 use lamco_portal::{PortalConfig, PortalManager, PortalSessionHandle};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +18,7 @@ const KEY_PRESS: bool = true;
 const KEY_RELEASE: bool = false;
 const BUTTON_PRESS: bool = true;
 const BUTTON_RELEASE: bool = false;
+const XKB_EVDEV_OFFSET: i32 = 8;
 
 pub struct PortalController {
     runtime: Runtime,
@@ -27,6 +29,7 @@ struct PortalState {
     manager: PortalManager,
     session: PortalSessionHandle,
     restore_token: Option<String>,
+    restore_token_path: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,6 +39,8 @@ pub struct PortalSessionResult {
     pub streams: Vec<PortalStreamInfo>,
     pub pipewire_fd: i32,
     pub restore_token_available: bool,
+    pub restore_token_persisted: bool,
+    pub restore_token_path: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +64,12 @@ pub struct PortalActionResult {
     pub message: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct StoredPortalGrant {
+    restore_token: String,
+    saved_at_ms: u128,
+}
+
 impl PortalController {
     pub fn new() -> Result<Self> {
         let runtime = Builder::new_multi_thread()
@@ -72,23 +83,47 @@ impl PortalController {
     }
 
     pub fn start(&mut self) -> Result<PortalSessionResult> {
-        let (manager, session, restore_token) = self.runtime.block_on(async {
+        let restore_token_path = restore_token_path();
+        let loaded_restore_token = load_restore_token(&restore_token_path)?;
+        let had_loaded_restore_token = loaded_restore_token.is_some();
+        let started = self.start_with_restore_token(loaded_restore_token);
+        let (manager, session, restore_token) = match started {
+            Ok(result) => result,
+            Err(error) if had_loaded_restore_token => {
+                let _ = fs::remove_file(&restore_token_path);
+                self.start_with_restore_token(None)
+                    .with_context(|| format!("saved portal restore token was rejected; retried after deleting {}. Original error: {error}", restore_token_path.display()))?
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(token) = restore_token.as_deref() {
+            save_restore_token(&restore_token_path, token)?;
+        }
+        self.state = Some(PortalState {
+            manager,
+            session,
+            restore_token,
+            restore_token_path,
+        });
+        self.status()
+    }
+
+    fn start_with_restore_token(
+        &self,
+        loaded_restore_token: Option<String>,
+    ) -> Result<(PortalManager, PortalSessionHandle, Option<String>)> {
+        self.runtime.block_on(async {
             let config = PortalConfig {
                 cursor_mode: CursorMode::Embedded,
-                persist_mode: PersistMode::DoNot,
+                persist_mode: PersistMode::ExplicitlyRevoked,
+                restore_token: loaded_restore_token,
                 ..PortalConfig::default()
             };
             let manager = PortalManager::new(config).await?;
             let session_name = format!("penguin-harness-{}", session::now_ms());
             let (session, restore_token) = manager.create_session(session_name, None).await?;
             Ok::<_, anyhow::Error>((manager, session, restore_token))
-        })?;
-        self.state = Some(PortalState {
-            manager,
-            session,
-            restore_token,
-        });
-        self.status()
+        })
     }
 
     pub fn status(&self) -> Result<PortalSessionResult> {
@@ -294,8 +329,6 @@ impl PortalController {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                     keycode_event(state, *modifier, KEY_RELEASE).await?;
                 }
-            } else if let Some(keycode) = keycode_for_key(key) {
-                send_keycode(state, keycode).await?;
             } else {
                 send_keysym(state, keysym_for_key(key)?).await?;
             }
@@ -341,6 +374,8 @@ fn session_result(state: &PortalState) -> PortalSessionResult {
             .collect(),
         pipewire_fd: state.session.pipewire_fd(),
         restore_token_available: state.restore_token.is_some(),
+        restore_token_persisted: state.restore_token_path.exists(),
+        restore_token_path: state.restore_token_path.clone(),
     }
 }
 
@@ -482,80 +517,85 @@ fn key_chord(key: &str) -> Result<Option<KeyChord>> {
 
 fn modifier_keycode(key: &str) -> Option<i32> {
     match key {
-        "ctrl" | "control" => Some(29),
-        "shift" => Some(42),
-        "alt" => Some(56),
+        "ctrl" | "control" => Some(xkb_keycode(29)),
+        "shift" => Some(xkb_keycode(42)),
+        "alt" => Some(xkb_keycode(56)),
         _ => None,
     }
 }
 
 fn keycode_for_key(key: &str) -> Option<i32> {
     let normalized = key.trim().to_ascii_lowercase().replace('_', "-");
-    match normalized.as_str() {
-        "escape" | "esc" => Some(1),
-        "1" => Some(2),
-        "2" => Some(3),
-        "3" => Some(4),
-        "4" => Some(5),
-        "5" => Some(6),
-        "6" => Some(7),
-        "7" => Some(8),
-        "8" => Some(9),
-        "9" => Some(10),
-        "0" => Some(11),
-        "backspace" => Some(14),
-        "tab" => Some(15),
-        "q" => Some(16),
-        "w" => Some(17),
-        "e" => Some(18),
-        "r" => Some(19),
-        "t" => Some(20),
-        "y" => Some(21),
-        "u" => Some(22),
-        "i" => Some(23),
-        "o" => Some(24),
-        "p" => Some(25),
-        "enter" | "return" => Some(28),
-        "a" => Some(30),
-        "s" => Some(31),
-        "d" => Some(32),
-        "f" => Some(33),
-        "g" => Some(34),
-        "h" => Some(35),
-        "j" => Some(36),
-        "k" => Some(37),
-        "l" => Some(38),
-        "z" => Some(44),
-        "x" => Some(45),
-        "c" => Some(46),
-        "v" => Some(47),
-        "b" => Some(48),
-        "n" => Some(49),
-        "m" => Some(50),
-        "space" => Some(57),
-        "f1" => Some(59),
-        "f2" => Some(60),
-        "f3" => Some(61),
-        "f4" => Some(62),
-        "f5" => Some(63),
-        "f6" => Some(64),
-        "f7" => Some(65),
-        "f8" => Some(66),
-        "f9" => Some(67),
-        "f10" => Some(68),
-        "f11" => Some(87),
-        "f12" => Some(88),
-        "home" => Some(102),
-        "up" => Some(103),
-        "page-up" | "pageup" => Some(104),
-        "left" => Some(105),
-        "right" => Some(106),
-        "end" => Some(107),
-        "down" => Some(108),
-        "page-down" | "pagedown" => Some(109),
-        "delete" | "del" => Some(111),
-        _ => None,
-    }
+    let evdev = match normalized.as_str() {
+        "escape" | "esc" => 1,
+        "1" => 2,
+        "2" => 3,
+        "3" => 4,
+        "4" => 5,
+        "5" => 6,
+        "6" => 7,
+        "7" => 8,
+        "8" => 9,
+        "9" => 10,
+        "0" => 11,
+        "backspace" => 14,
+        "tab" => 15,
+        "q" => 16,
+        "w" => 17,
+        "e" => 18,
+        "r" => 19,
+        "t" => 20,
+        "y" => 21,
+        "u" => 22,
+        "i" => 23,
+        "o" => 24,
+        "p" => 25,
+        "enter" | "return" => 28,
+        "a" => 30,
+        "s" => 31,
+        "d" => 32,
+        "f" => 33,
+        "g" => 34,
+        "h" => 35,
+        "j" => 36,
+        "k" => 37,
+        "l" => 38,
+        "z" => 44,
+        "x" => 45,
+        "c" => 46,
+        "v" => 47,
+        "b" => 48,
+        "n" => 49,
+        "m" => 50,
+        "space" => 57,
+        "f1" => 59,
+        "f2" => 60,
+        "f3" => 61,
+        "f4" => 62,
+        "f5" => 63,
+        "f6" => 64,
+        "f7" => 65,
+        "f8" => 66,
+        "f9" => 67,
+        "f10" => 68,
+        "f11" => 87,
+        "f12" => 88,
+        "home" => 102,
+        "up" => 103,
+        "page-up" | "pageup" => 104,
+        "left" => 105,
+        "right" => 106,
+        "end" => 107,
+        "down" => 108,
+        "page-down" | "pagedown" => 109,
+        "delete" | "del" => 111,
+        _ => return None,
+    };
+    Some(xkb_keycode(evdev))
+}
+
+fn xkb_keycode(evdev_keycode: i32) -> i32 {
+    evdev_keycode + XKB_EVDEV_OFFSET
 }
 
 fn evdev_button(button: MouseButton) -> i32 {
@@ -585,22 +625,58 @@ fn ensure_png(path: &Path) -> Result<()> {
         .map(|_| ())
 }
 
+fn load_restore_token(path: &Path) -> Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let grant: StoredPortalGrant =
+        serde_json::from_slice(&data).with_context(|| format!("parse {}", path.display()))?;
+    Ok(Some(grant.restore_token))
+}
+
+fn save_restore_token(path: &Path, token: &str) -> Result<()> {
+    let grant = StoredPortalGrant {
+        restore_token: token.to_string(),
+        saved_at_ms: session::now_ms(),
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let data = serde_json::to_vec_pretty(&grant)?;
+    fs::write(path, data).with_context(|| format!("write {}", path.display()))
+}
+
+fn restore_token_path() -> PathBuf {
+    state_dir().join("portal-restore-token.json")
+}
+
+fn state_dir() -> PathBuf {
+    if let Some(path) = env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path).join("penguin-harness");
+    }
+    if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(home).join(".local/state/penguin-harness");
+    }
+    session::root_dir().join("state")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{key_chord, keycode_for_key};
 
     #[test]
     fn portal_keycodes_cover_common_shortcuts() {
-        assert_eq!(keycode_for_key("Enter"), Some(28));
-        assert_eq!(keycode_for_key("s"), Some(31));
-        assert_eq!(keycode_for_key("F5"), Some(63));
+        assert_eq!(keycode_for_key("Enter"), Some(36));
+        assert_eq!(keycode_for_key("s"), Some(39));
+        assert_eq!(keycode_for_key("F5"), Some(71));
 
         let chord = key_chord("Ctrl-S").unwrap().unwrap();
-        assert_eq!(chord.modifiers, vec![29]);
-        assert_eq!(chord.keycode, 31);
+        assert_eq!(chord.modifiers, vec![37]);
+        assert_eq!(chord.keycode, 39);
 
         let chord = key_chord("Ctrl-Shift-P").unwrap().unwrap();
-        assert_eq!(chord.modifiers, vec![29, 42]);
-        assert_eq!(chord.keycode, 25);
+        assert_eq!(chord.modifiers, vec![37, 50]);
+        assert_eq!(chord.keycode, 33);
     }
 }

@@ -88,7 +88,7 @@ fn initialize_result(params: Option<&Value>) -> Result<Value, Value> {
             "name": "penguin_harness",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Linux desktop control. X11 tools control X11/Xwayland windows through XTEST/EWMH. Portal tools control Wayland desktops through xdg-desktop-portal RemoteDesktop/ScreenCast after the user approves the system permission prompt. Take screenshots before and after GUI actions that change visible state. X11 window coordinates are relative to the target window screenshot; portal screen coordinates are absolute screen pixels."
+        "instructions": "Linux desktop control. X11 tools control X11/Xwayland windows through XTEST/EWMH. Portal tools control Wayland desktops through xdg-desktop-portal RemoteDesktop/ScreenCast after the user approves the system permission prompt. portal_start requests persistent portal permission and reuses a saved restore token when the compositor supports it. Take screenshots before and after GUI actions that change visible state. X11 window coordinates are relative to the target window screenshot; portal screen coordinates are absolute screen pixels."
     }))
 }
 
@@ -619,7 +619,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "portal_start",
-            "Start a Wayland RemoteDesktop/ScreenCast portal session. This normally shows a system permission prompt for the human to approve.",
+            "Start a Wayland RemoteDesktop/ScreenCast portal session. The first run normally shows a system permission prompt; later runs can reuse the saved restore token when supported.",
             json!({
                 "type": "object",
                 "properties": {}

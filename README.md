@@ -9,7 +9,7 @@ Penguin Harness exposes a small CLI and an MCP stdio server that can launch GUI 
 Penguin Harness has two desktop-control paths:
 
 - X11/Xwayland tools use XTEST for keyboard and mouse synthesis, native X11 screenshot capture, and EWMH/NetWM window-manager properties for window listing, focusing, resizing, and close requests.
-- Wayland portal tools use `xdg-desktop-portal` RemoteDesktop/ScreenCast permission flow for compositor-approved full-desktop control. A human may need to approve the system prompt when `portal_start` runs.
+- Wayland portal tools use `xdg-desktop-portal` RemoteDesktop/ScreenCast permission flow for compositor-approved full-desktop control. `portal_start` asks for persistent permission and stores the returned restore token under `~/.local/state/penguin-harness` when the compositor provides one.
 - Native Wayland windows are not visible to X11 tools. Use the `portal_*` tools for native Wayland apps.
 
 Run this first on a new machine:
@@ -186,7 +186,7 @@ The server exposes:
 
 1. Start with `check_environment`.
 2. On X11/Xwayland, use `list_sessions`, `list_windows`, `find_windows`, or `launch_app` to identify the target.
-3. On native Wayland, call `portal_start` and have the human approve the permission prompt.
+3. On native Wayland, call `portal_start`. A human may need to approve the first permission prompt; later starts can reuse the stored restore token when the compositor supports persistent grants.
 4. Take a `screenshot` or `portal_screenshot` with `include_image: true`.
 5. Use screenshot-relative coordinates for X11 window actions and absolute screen coordinates for portal actions.
 6. Verify visible state with another screenshot after each meaningful UI action.
