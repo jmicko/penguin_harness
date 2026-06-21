@@ -30,6 +30,7 @@ struct PortalState {
     session: PortalSessionHandle,
     restore_token: Option<String>,
     restore_token_path: PathBuf,
+    persistent_permission_requested: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,6 +42,7 @@ pub struct PortalSessionResult {
     pub restore_token_available: bool,
     pub restore_token_persisted: bool,
     pub restore_token_path: PathBuf,
+    pub persistent_permission_requested: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,13 +88,39 @@ impl PortalController {
         let restore_token_path = restore_token_path();
         let loaded_restore_token = load_restore_token(&restore_token_path)?;
         let had_loaded_restore_token = loaded_restore_token.is_some();
-        let started = self.start_with_restore_token(loaded_restore_token);
-        let (manager, session, restore_token) = match started {
-            Ok(result) => result,
+        let started = self.start_with_options(PersistMode::ExplicitlyRevoked, loaded_restore_token);
+        let ((manager, session, restore_token), persistent_permission_requested) = match started {
+            Ok(result) => (result, true),
             Err(error) if had_loaded_restore_token => {
                 let _ = fs::remove_file(&restore_token_path);
-                self.start_with_restore_token(None)
-                    .with_context(|| format!("saved portal restore token was rejected; retried after deleting {}. Original error: {error}", restore_token_path.display()))?
+                match self.start_with_options(PersistMode::ExplicitlyRevoked, None) {
+                    Ok(result) => (result, true),
+                    Err(retry_error) if is_persistence_unsupported(&retry_error) => {
+                        let result = self
+                            .start_with_options(PersistMode::DoNot, None)
+                            .with_context(|| {
+                                format!(
+                                    "saved portal restore token was rejected and persistent permission is unsupported; retried non-persistently after deleting {}. Original error: {error}",
+                                    restore_token_path.display()
+                                )
+                            })?;
+                        (result, false)
+                    }
+                    Err(retry_error) => {
+                        return Err(retry_error).with_context(|| {
+                            format!(
+                                "saved portal restore token was rejected; retried after deleting {}. Original error: {error}",
+                                restore_token_path.display()
+                            )
+                        });
+                    }
+                }
+            }
+            Err(error) if is_persistence_unsupported(&error) => {
+                let result = self.start_with_options(PersistMode::DoNot, None).with_context(|| {
+                    format!("persistent portal permission is unsupported; retried non-persistently. Original error: {error}")
+                })?;
+                (result, false)
             }
             Err(error) => return Err(error),
         };
@@ -104,18 +132,20 @@ impl PortalController {
             session,
             restore_token,
             restore_token_path,
+            persistent_permission_requested,
         });
         self.status()
     }
 
-    fn start_with_restore_token(
+    fn start_with_options(
         &self,
+        persist_mode: PersistMode,
         loaded_restore_token: Option<String>,
     ) -> Result<(PortalManager, PortalSessionHandle, Option<String>)> {
         self.runtime.block_on(async {
             let config = PortalConfig {
                 cursor_mode: CursorMode::Embedded,
-                persist_mode: PersistMode::ExplicitlyRevoked,
+                persist_mode,
                 restore_token: loaded_restore_token,
                 ..PortalConfig::default()
             };
@@ -376,6 +406,7 @@ fn session_result(state: &PortalState) -> PortalSessionResult {
         restore_token_available: state.restore_token.is_some(),
         restore_token_persisted: state.restore_token_path.exists(),
         restore_token_path: state.restore_token_path.clone(),
+        persistent_permission_requested: state.persistent_permission_requested,
     }
 }
 
@@ -659,6 +690,12 @@ fn state_dir() -> PathBuf {
         return PathBuf::from(home).join(".local/state/penguin-harness");
     }
     session::root_dir().join("state")
+}
+
+fn is_persistence_unsupported(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("cannot persist")
+        || (message.contains("InvalidArgument") && message.contains("persist"))
 }
 
 #[cfg(test)]
