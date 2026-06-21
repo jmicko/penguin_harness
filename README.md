@@ -6,10 +6,11 @@ Penguin Harness exposes a small CLI and an MCP stdio server that can launch GUI 
 
 ## Current Scope
 
-Penguin Harness has two desktop-control paths:
+Penguin Harness has three desktop-control paths:
 
 - X11/Xwayland tools use XTEST for keyboard and mouse synthesis, native X11 screenshot capture, and EWMH/NetWM window-manager properties for window listing, focusing, resizing, and close requests.
 - Wayland portal tools use `xdg-desktop-portal` RemoteDesktop/ScreenCast permission flow for compositor-approved full-desktop control. `portal_start` tries to request persistent permission and stores the returned restore token under `~/.local/state/penguin-harness` when the compositor provides one. Some compositors, including GNOME in current testing, reject persistent RemoteDesktop sessions and require approval each time.
+- Native unattended tools use compositor-specific screenshot backends plus `/dev/uinput` virtual keyboard/mouse events. This is intended for dedicated machines where the operator explicitly trusts Penguin Harness to drive the desktop without prompts.
 - Native Wayland windows are not visible to X11 tools. Use the `portal_*` tools for native Wayland apps.
 
 Run this first on a new machine:
@@ -116,6 +117,20 @@ sudo apt install xvfb openbox
 
 `Xephyr`, `fluxbox`, `i3`, or `matchbox-window-manager` can also satisfy the isolated-mode pieces.
 
+Optional for unattended native input:
+
+```bash
+./scripts/install-uinput-rule.sh
+```
+
+That installs a udev rule allowing the active graphical seat user to open `/dev/uinput`. For a dedicated headless or SSH-driven machine, you can also grant a specific user broad input-device trust:
+
+```bash
+./scripts/install-uinput-rule.sh --add-user-to-input --user "$USER"
+```
+
+Membership in the `input` group is powerful: it can read and inject input. Use that only on machines you are comfortable dedicating to automation.
+
 ## CLI Examples
 
 ```bash
@@ -126,6 +141,10 @@ penguin-harness active-window
 penguin-harness window-info --window-id 0x5600004
 penguin-harness screenshot --window-id 0x5600004
 penguin-harness screenshot-screen
+penguin-harness native-check
+penguin-harness native-screenshot
+penguin-harness native-click-screen --x 100 --y 80
+penguin-harness native-type "hello"
 penguin-harness focus --window-id 0x5600004
 penguin-harness type --window-id 0x5600004 "hello"
 penguin-harness key --window-id 0x5600004 Enter
@@ -168,6 +187,14 @@ The server exposes:
 - `portal_scroll_screen`
 - `portal_type_text`
 - `portal_press_key`
+- `native_check`
+- `native_screenshot`
+- `native_click_screen`
+- `native_double_click_screen`
+- `native_drag_screen`
+- `native_scroll_screen`
+- `native_type_text`
+- `native_press_key`
 - `type_text`
 - `type_active`
 - `press_key`
@@ -187,10 +214,11 @@ The server exposes:
 1. Start with `check_environment`.
 2. On X11/Xwayland, use `list_sessions`, `list_windows`, `find_windows`, or `launch_app` to identify the target.
 3. On native Wayland, call `portal_start`. A human may need to approve the permission prompt. Later starts can reuse a stored restore token only when the compositor supports persistent RemoteDesktop grants.
-4. Take a `screenshot` or `portal_screenshot` with `include_image: true`.
-5. Use screenshot-relative coordinates for X11 window actions and absolute screen coordinates for portal actions.
-6. Verify visible state with another screenshot after each meaningful UI action.
-7. Use `close_window` for existing user apps and `close_session` for apps launched by the harness.
+4. On a dedicated unattended machine, prefer `native_check`, `native_screenshot`, and `native_*` input tools after `/dev/uinput` setup.
+5. Take a `screenshot`, `portal_screenshot`, or `native_screenshot` with `include_image: true`.
+6. Use screenshot-relative coordinates for X11 window actions and absolute screen coordinates for portal/native actions.
+7. Verify visible state with another screenshot after each meaningful UI action.
+8. Use `close_window` for existing user apps and `close_session` for apps launched by the harness.
 
 ## Notes For Desktop Switching
 

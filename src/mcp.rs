@@ -23,12 +23,14 @@ struct ToolCall {
 }
 
 struct McpState {
+    native: crate::native::NativeController,
     portal: crate::portal::PortalController,
 }
 
 impl McpState {
     fn new() -> Result<Self> {
         Ok(Self {
+            native: crate::native::NativeController::new(),
             portal: crate::portal::PortalController::new()?,
         })
     }
@@ -88,7 +90,7 @@ fn initialize_result(params: Option<&Value>) -> Result<Value, Value> {
             "name": "penguin_harness",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Linux desktop control. X11 tools control X11/Xwayland windows through XTEST/EWMH. Portal tools control Wayland desktops through xdg-desktop-portal RemoteDesktop/ScreenCast after the user approves the system permission prompt. portal_start attempts persistent portal permission and reuses a saved restore token only when the compositor supports persistent RemoteDesktop grants. Take screenshots before and after GUI actions that change visible state. X11 window coordinates are relative to the target window screenshot; portal screen coordinates are absolute screen pixels."
+        "instructions": "Linux desktop control. X11 tools control X11/Xwayland windows through XTEST/EWMH. Portal tools control Wayland desktops through xdg-desktop-portal RemoteDesktop/ScreenCast after the user approves the system permission prompt. Native tools use compositor-specific screenshot backends and /dev/uinput virtual input for unattended dedicated machines after explicit host setup. Take screenshots before and after GUI actions that change visible state. X11 window coordinates are relative to the target window screenshot; portal and native screen coordinates are absolute screen pixels."
     }))
 }
 
@@ -126,6 +128,14 @@ fn call_tool(params: Option<Value>, state: &mut McpState) -> Result<Value, Value
             "portal_scroll_screen" => portal_scroll_screen_tool(args, &state.portal),
             "portal_type_text" => portal_type_text_tool(args, &state.portal),
             "portal_press_key" => portal_press_key_tool(args, &state.portal),
+            "native_check" => ok_text(crate::native::check()),
+            "native_screenshot" => native_screenshot_tool(args),
+            "native_click_screen" => native_click_screen_tool(args, &mut state.native, false),
+            "native_double_click_screen" => native_click_screen_tool(args, &mut state.native, true),
+            "native_drag_screen" => native_drag_screen_tool(args, &mut state.native),
+            "native_scroll_screen" => native_scroll_screen_tool(args, &mut state.native),
+            "native_type_text" => native_type_text_tool(args, &mut state.native),
+            "native_press_key" => native_press_key_tool(args, &mut state.native),
             "screenshot" => screenshot_tool(args),
             "screenshot_screen" => screenshot_screen_tool(args),
             "type_text" => type_text_tool(args),
@@ -165,6 +175,14 @@ struct ScreenshotArgs {
 struct ScreenScreenshotArgs {
     #[serde(default)]
     include_image: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeScreenshotArgs {
+    #[serde(default)]
+    include_image: bool,
+    #[serde(default)]
+    include_cursor: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -307,6 +325,23 @@ fn portal_screenshot_tool(args: Value, portal: &crate::portal::PortalController)
     Ok(json!({ "content": content, "isError": false }))
 }
 
+fn native_screenshot_tool(args: Value) -> Result<Value> {
+    let args: NativeScreenshotArgs = typed(args)?;
+    let result = crate::native_screenshot::capture(args.include_cursor)?;
+    let text = serde_json::to_string_pretty(&result)?;
+    let mut content = vec![json!({ "type": "text", "text": text })];
+    if args.include_image {
+        let bytes = std::fs::read(&result.path)
+            .with_context(|| format!("read screenshot {}", result.path.display()))?;
+        content.push(json!({
+            "type": "image",
+            "mimeType": "image/png",
+            "data": base64::engine::general_purpose::STANDARD.encode(bytes)
+        }));
+    }
+    Ok(json!({ "content": content, "isError": false }))
+}
+
 fn type_text_tool(args: Value) -> Result<Value> {
     let args: TextArgs = typed(args)?;
     ok_text(actions::type_text(
@@ -374,6 +409,19 @@ fn portal_click_screen_tool(
     }
 }
 
+fn native_click_screen_tool(
+    args: Value,
+    native: &mut crate::native::NativeController,
+    double: bool,
+) -> Result<Value> {
+    let args: ScreenClickArgs = typed(args)?;
+    if double {
+        ok_text(native.double_click_screen(args.x, args.y, args.button)?)
+    } else {
+        ok_text(native.click_screen(args.x, args.y, args.button)?)
+    }
+}
+
 fn drag_tool(args: Value) -> Result<Value> {
     let args: DragArgs = typed(args)?;
     ok_text(actions::drag(
@@ -405,6 +453,14 @@ fn portal_drag_screen_tool(args: Value, portal: &crate::portal::PortalController
     ok_text(portal.drag_screen(args.x1, args.y1, args.x2, args.y2, args.button)?)
 }
 
+fn native_drag_screen_tool(
+    args: Value,
+    native: &mut crate::native::NativeController,
+) -> Result<Value> {
+    let args: ScreenDragArgs = typed(args)?;
+    ok_text(native.drag_screen(args.x1, args.y1, args.x2, args.y2, args.button)?)
+}
+
 fn scroll_tool(args: Value) -> Result<Value> {
     let args: ScrollArgs = typed(args)?;
     ok_text(actions::scroll(
@@ -431,6 +487,14 @@ fn portal_scroll_screen_tool(
     ok_text(portal.scroll_screen(args.x, args.y, args.amount)?)
 }
 
+fn native_scroll_screen_tool(
+    args: Value,
+    native: &mut crate::native::NativeController,
+) -> Result<Value> {
+    let args: ScreenScrollArgs = typed(args)?;
+    ok_text(native.scroll_screen(args.x, args.y, args.amount)?)
+}
+
 fn portal_type_text_tool(args: Value, portal: &crate::portal::PortalController) -> Result<Value> {
     let args: ActiveTextArgs = typed(args)?;
     ok_text(portal.type_text(&args.text)?)
@@ -439,6 +503,22 @@ fn portal_type_text_tool(args: Value, portal: &crate::portal::PortalController) 
 fn portal_press_key_tool(args: Value, portal: &crate::portal::PortalController) -> Result<Value> {
     let args: ActiveKeyArgs = typed(args)?;
     ok_text(portal.press_key(&args.key)?)
+}
+
+fn native_type_text_tool(
+    args: Value,
+    native: &mut crate::native::NativeController,
+) -> Result<Value> {
+    let args: ActiveTextArgs = typed(args)?;
+    ok_text(native.type_text(&args.text)?)
+}
+
+fn native_press_key_tool(
+    args: Value,
+    native: &mut crate::native::NativeController,
+) -> Result<Value> {
+    let args: ActiveKeyArgs = typed(args)?;
+    ok_text(native.press_key(&args.key)?)
 }
 
 fn close_tool(args: Value) -> Result<Value> {
@@ -695,6 +775,85 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "portal_press_key",
             "Press one key through the Wayland RemoteDesktop portal, such as Enter, Escape, Tab, Ctrl-C, Left, Right, F5.",
+            json!({
+                "type": "object",
+                "required": ["key"],
+                "properties": {
+                    "key": { "type": "string" }
+                }
+            }),
+        ),
+        tool(
+            "native_check",
+            "Report unattended native backend readiness, including /dev/uinput access and screenshot backend availability.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        tool(
+            "native_screenshot",
+            "Capture the desktop through a compositor-specific screenshot backend without starting a RemoteDesktop portal session.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "include_image": { "type": "boolean", "default": false },
+                    "include_cursor": { "type": "boolean", "default": false }
+                }
+            }),
+        ),
+        tool(
+            "native_click_screen",
+            "Click an absolute screen coordinate using the /dev/uinput virtual input backend. Requires host setup.",
+            screen_point_schema(),
+        ),
+        tool(
+            "native_double_click_screen",
+            "Double-click an absolute screen coordinate using the /dev/uinput virtual input backend. Requires host setup.",
+            screen_point_schema(),
+        ),
+        tool(
+            "native_drag_screen",
+            "Drag between two absolute screen coordinates using the /dev/uinput virtual input backend. Requires host setup.",
+            json!({
+                "type": "object",
+                "required": ["x1", "y1", "x2", "y2"],
+                "properties": {
+                    "x1": { "type": "integer" },
+                    "y1": { "type": "integer" },
+                    "x2": { "type": "integer" },
+                    "y2": { "type": "integer" },
+                    "button": { "type": "string", "enum": ["left", "middle", "right"], "default": "left" }
+                }
+            }),
+        ),
+        tool(
+            "native_scroll_screen",
+            "Scroll at an absolute screen coordinate using the /dev/uinput virtual input backend. Requires host setup.",
+            json!({
+                "type": "object",
+                "required": ["x", "y", "amount"],
+                "properties": {
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "amount": { "type": "integer" }
+                }
+            }),
+        ),
+        tool(
+            "native_type_text",
+            "Type US-layout printable ASCII text through /dev/uinput into the currently focused surface. Requires host setup.",
+            json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": { "type": "string" }
+                }
+            }),
+        ),
+        tool(
+            "native_press_key",
+            "Press one key or modifier chord through /dev/uinput, such as Enter, Escape, Tab, Ctrl-S, Left, Right, F5. Requires host setup.",
             json!({
                 "type": "object",
                 "required": ["key"],

@@ -30,6 +30,14 @@ enum Command {
     Terminal(TerminalArgs),
     Screenshot(TargetArgs),
     ScreenshotScreen,
+    NativeCheck,
+    NativeScreenshot(NativeScreenshotArgs),
+    NativeType(ActiveTypeArgs),
+    NativeKey(ActiveKeyArgs),
+    NativeClickScreen(ScreenPointArgs),
+    NativeDoubleClickScreen(ScreenPointArgs),
+    NativeDragScreen(ScreenDragArgs),
+    NativeScrollScreen(ScreenScrollArgs),
     Focus(TargetArgs),
     CloseWindow(TargetArgs),
     Type(TypeArgs),
@@ -229,6 +237,12 @@ struct ScreenScrollArgs {
     amount: i32,
 }
 
+#[derive(Debug, Args)]
+struct NativeScreenshotArgs {
+    #[arg(long)]
+    include_cursor: bool,
+}
+
 #[derive(Clone, Debug)]
 struct ButtonArg(MouseButton);
 
@@ -301,6 +315,36 @@ pub fn run() -> Result<()> {
         })?),
         Command::Screenshot(args) => print_json(actions::screenshot(args.into())?),
         Command::ScreenshotScreen => print_json(actions::screenshot_screen()?),
+        Command::NativeCheck => print_json(crate::native::check()),
+        Command::NativeScreenshot(args) => {
+            print_json(crate::native_screenshot::capture(args.include_cursor)?)
+        }
+        Command::NativeType(args) => print_json(crate::native_input::with_device(|device| {
+            device.type_text(&args.text)
+        })?),
+        Command::NativeKey(args) => print_json(crate::native_input::with_device(|device| {
+            device.press_key(&args.key)
+        })?),
+        Command::NativeClickScreen(args) => {
+            print_json(crate::native_input::with_device(|device| {
+                device.click_screen(args.x, args.y, args.button.0)
+            })?)
+        }
+        Command::NativeDoubleClickScreen(args) => {
+            print_json(crate::native_input::with_device(|device| {
+                device.double_click_screen(args.x, args.y, args.button.0)
+            })?)
+        }
+        Command::NativeDragScreen(args) => {
+            print_json(crate::native_input::with_device(|device| {
+                device.drag_screen(args.x1, args.y1, args.x2, args.y2, args.button.0)
+            })?)
+        }
+        Command::NativeScrollScreen(args) => {
+            print_json(crate::native_input::with_device(|device| {
+                device.scroll_screen(args.x, args.y, args.amount)
+            })?)
+        }
         Command::Focus(args) => print_json(actions::focus(args.into())?),
         Command::CloseWindow(args) => print_json(actions::close_window(args.into())?),
         Command::Type(args) => print_json(actions::type_text(args.target.into(), &args.text)?),

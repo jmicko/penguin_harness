@@ -18,6 +18,7 @@ pub struct EnvironmentCheck {
     pub xtest_version: Option<String>,
     pub screen_size: Option<(u16, u16)>,
     pub portal: PortalCheck,
+    pub native: crate::native::NativeCheck,
     pub commands: Vec<CommandCheck>,
     pub isolated_mode_ready: bool,
     pub notes: Vec<String>,
@@ -63,6 +64,7 @@ pub fn check() -> EnvironmentCheck {
     let screen_size = x11_control::screen_size().ok();
     let x11_connects = screen_size.is_some();
     let portal = check_portal();
+    let native = crate::native::check();
     let commands = [
         "x-terminal-emulator",
         "ptyxis",
@@ -125,6 +127,20 @@ pub fn check() -> EnvironmentCheck {
     if !isolated_mode_ready {
         notes.push("Isolated mode needs Xvfb or Xephyr plus a window manager.".to_string());
     }
+    if !native.input.writable {
+        notes.push(
+            "Native unattended input needs write access to /dev/uinput; install the udev rule or run a trusted helper."
+                .to_string(),
+        );
+    }
+    if !native
+        .screenshot
+        .backends
+        .iter()
+        .any(|backend| backend.available)
+    {
+        notes.push("No native screenshot backend was detected.".to_string());
+    }
 
     EnvironmentCheck {
         display,
@@ -137,6 +153,7 @@ pub fn check() -> EnvironmentCheck {
         xtest_version,
         screen_size,
         portal,
+        native,
         commands,
         isolated_mode_ready,
         notes,
