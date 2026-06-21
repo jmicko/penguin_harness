@@ -104,6 +104,17 @@ pub fn ensure_window_exists(window_id: WindowId) -> Result<()> {
     get_geometry(window_id).map(|_| ())
 }
 
+pub fn wait_until_gone(window_id: WindowId, timeout: Duration) -> Result<bool> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if get_geometry(window_id).is_err() {
+            return Ok(true);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(get_geometry(window_id).is_err())
+}
+
 pub fn get_window_info(window_id: WindowId) -> Result<WindowInfo> {
     let (conn, _) = x11rb::connect(None).context("connect to X11 display")?;
     let atoms = Atoms::load(&conn)?;

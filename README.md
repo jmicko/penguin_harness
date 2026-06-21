@@ -30,6 +30,12 @@ From this checkout, the recommended install is:
 ./scripts/install-user.sh
 ```
 
+Source installs need Rust plus a working system linker. On a fresh Ubuntu install:
+
+```bash
+sudo apt install build-essential
+```
+
 That script runs:
 
 ```bash
@@ -78,7 +84,7 @@ That creates or updates only that repo's `.codex/config.toml`:
 [mcp_servers.penguin_harness]
 command = "/home/YOU/.local/bin/penguin-harness"
 args = ["mcp"]
-env_vars = ["DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "HOME"]
+env_vars = ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "PATH", "SHELL", "HOME"]
 startup_timeout_sec = 20
 tool_timeout_sec = 120
 default_tools_approval_mode = "prompt"
@@ -185,4 +191,6 @@ On a new computer or desktop environment, the first branch point is the session 
 
 GNOME on Wayland commonly runs Xwayland with an auth file like `/run/user/1000/.mutter-Xwaylandauth.*`. If `penguin-harness check` reports that `XAUTHORITY` is unset but lists an Xwayland auth candidate, launch Codex from the graphical terminal or export that file as `XAUTHORITY` for SSH-based testing.
 
-Terminal launch support includes `x-terminal-emulator`, MATE Terminal, GNOME Terminal, XFCE Terminal, xterm, kitty, Alacritty, Konsole, and WezTerm. Unknown terminals can still be launched, but Penguin Harness only passes `cwd` or command arguments to terminals whose flags it knows.
+Rootless Xwayland can expose individual X11/Xwayland app windows while rejecting root-screen screenshots. In that setup, use `screenshot` on a specific Xwayland window rather than `screenshot_screen`.
+
+Terminal launch support includes `x-terminal-emulator`, Ptyxis, MATE Terminal, GNOME Terminal, XFCE Terminal, xterm, kitty, Alacritty, Konsole, and WezTerm. On GNOME Wayland, Penguin Harness prefers Ptyxis when present and launches it as a standalone GTK/X11 app so XTEST can control it. Unknown terminals can still be launched, but Penguin Harness only passes `cwd` or command arguments to terminals whose flags it knows.

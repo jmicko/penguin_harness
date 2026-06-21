@@ -40,6 +40,7 @@ pub fn check() -> EnvironmentCheck {
     let x11_connects = screen_size.is_some();
     let commands = [
         "x-terminal-emulator",
+        "ptyxis",
         "mate-terminal",
         "gnome-terminal",
         "xfce4-terminal",

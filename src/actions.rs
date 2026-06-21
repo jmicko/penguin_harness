@@ -175,10 +175,15 @@ pub fn focus(target: TargetRequest) -> Result<SimpleResult> {
 pub fn close_window(target: TargetRequest) -> Result<SimpleResult> {
     let (window_id, session) = resolve_target(&target)?;
     window::close_window(window_id)?;
+    let closed = window::wait_until_gone(window_id, Duration::from_secs(2))?;
     Ok(SimpleResult {
         session_id: session.map(|s| s.id),
         window_id: Some(window_id),
-        message: format!("requested close for {window_id}"),
+        message: if closed {
+            format!("closed {window_id}")
+        } else {
+            format!("requested close for {window_id}, but it is still present")
+        },
     })
 }
 
@@ -319,11 +324,19 @@ pub fn scroll_screen(x: i32, y: i32, amount: i32) -> Result<SimpleResult> {
 
 pub fn close_session(session_id: &str) -> Result<SimpleResult> {
     let session = session::load(session_id)?;
+    let mut window_closed = false;
     if let Some(window_id) = session.window_id {
         let _ = window::close_window(window_id);
+        window_closed = window::wait_until_gone(window_id, Duration::from_secs(2)).unwrap_or(false);
     }
-    if let Some(pid) = session.pid {
-        let _ = Command::new("kill").arg(pid.to_string()).status();
+    if !window_closed {
+        if let Some(pid) = session.pid {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+            if let Some(window_id) = session.window_id {
+                window_closed =
+                    window::wait_until_gone(window_id, Duration::from_secs(1)).unwrap_or(false);
+            }
+        }
     }
     if let Some(pid) = session.isolated_wm_pid {
         let _ = Command::new("kill").arg(pid.to_string()).status();
@@ -335,7 +348,11 @@ pub fn close_session(session_id: &str) -> Result<SimpleResult> {
     Ok(SimpleResult {
         session_id: Some(session_id.to_string()),
         window_id: session.window_id,
-        message: "closed session".to_string(),
+        message: if session.window_id.is_some() && !window_closed {
+            "closed session; window may still be present".to_string()
+        } else {
+            "closed session".to_string()
+        },
     })
 }
 

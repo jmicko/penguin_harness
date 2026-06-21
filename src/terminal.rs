@@ -4,6 +4,7 @@ use crate::session;
 use crate::types::Mode;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -49,21 +50,61 @@ pub fn launch_terminal(request: TerminalRequest) -> Result<TerminalResult> {
 }
 
 pub fn default_terminal() -> String {
-    [
-        "x-terminal-emulator",
-        "mate-terminal",
-        "gnome-terminal",
-        "xfce4-terminal",
-        "konsole",
-        "kitty",
-        "alacritty",
-        "wezterm",
-        "xterm",
-    ]
-    .into_iter()
-    .find(|name| env_check::command_path(name).is_some())
-    .unwrap_or("xterm")
-    .to_string()
+    let candidates: &[&str] = if is_wayland_with_x11() {
+        &[
+            "ptyxis",
+            "x-terminal-emulator",
+            "gnome-terminal",
+            "mate-terminal",
+            "xfce4-terminal",
+            "konsole",
+            "kitty",
+            "alacritty",
+            "wezterm",
+            "xterm",
+        ]
+    } else {
+        &[
+            "x-terminal-emulator",
+            "mate-terminal",
+            "gnome-terminal",
+            "xfce4-terminal",
+            "ptyxis",
+            "konsole",
+            "kitty",
+            "alacritty",
+            "wezterm",
+            "xterm",
+        ]
+    };
+
+    candidates
+        .iter()
+        .copied()
+        .find(|name| env_check::command_path(name).is_some())
+        .unwrap_or("xterm")
+        .to_string()
+}
+
+fn is_wayland_with_x11() -> bool {
+    env::var("XDG_SESSION_TYPE").is_ok_and(|session| session.eq_ignore_ascii_case("wayland"))
+        && env::var("DISPLAY").is_ok_and(|display| !display.is_empty())
+}
+
+fn gtk_command_prefix(path: String) -> Vec<String> {
+    if is_wayland_with_x11() {
+        vec!["env".to_string(), "GDK_BACKEND=x11".to_string(), path]
+    } else {
+        vec![path]
+    }
+}
+
+fn base_terminal_command(path: String, resolved_name: &str) -> Vec<String> {
+    if resolved_name.contains("gnome-terminal") || resolved_name.contains("ptyxis") {
+        gtk_command_prefix(path)
+    } else {
+        vec![path]
+    }
 }
 
 fn terminal_command(
@@ -80,7 +121,7 @@ fn terminal_command(
         None
     };
 
-    let mut args = vec![path.clone()];
+    let mut args = base_terminal_command(path.clone(), &resolved_name);
     if resolved_name.contains("mate-terminal") {
         args.push("--disable-factory".to_string());
         args.push("--title".to_string());
@@ -94,6 +135,18 @@ fn terminal_command(
             args.push(script.display().to_string());
         }
     } else if resolved_name.contains("gnome-terminal") {
+        args.push("--title".to_string());
+        args.push(title.to_string());
+        if let Some(cwd) = cwd {
+            args.push("--working-directory".to_string());
+            args.push(cwd.display().to_string());
+        }
+        if let Some(script) = script {
+            args.push("--".to_string());
+            args.push(script.display().to_string());
+        }
+    } else if resolved_name.contains("ptyxis") {
+        args.push("--standalone".to_string());
         args.push("--title".to_string());
         args.push(title.to_string());
         if let Some(cwd) = cwd {
@@ -254,5 +307,29 @@ mod tests {
             .expect("terminal command");
 
         assert_eq!(command, ["definitely-not-a-real-terminal"]);
+    }
+
+    #[test]
+    fn ptyxis_command_uses_standalone_window_and_title() {
+        let command = terminal_command(
+            "ptyxis",
+            "penguin-title",
+            None,
+            Some(&["bash".to_string(), "-lc".to_string(), "true".to_string()]),
+        )
+        .expect("terminal command");
+
+        assert!(
+            command
+                .iter()
+                .any(|part| part.ends_with("/ptyxis") || part == "ptyxis")
+        );
+        assert!(command.contains(&"--standalone".to_string()));
+        assert!(
+            command
+                .windows(2)
+                .any(|pair| pair == ["--title", "penguin-title"])
+        );
+        assert!(command.contains(&"--".to_string()));
     }
 }
