@@ -441,7 +441,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "launch_terminal",
-            "Launch the user's default terminal emulator, preferring x-terminal-emulator/MATE Terminal on Linux Mint.",
+            "Launch a controllable terminal emulator window. On GNOME Wayland this prefers Ptyxis/Xwayland when available.",
             json!({
                 "type": "object",
                 "properties": {
