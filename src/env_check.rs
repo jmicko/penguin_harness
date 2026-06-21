@@ -3,6 +3,8 @@ use serde::Serialize;
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(unix)]
+use std::{fs, os::unix::fs::PermissionsExt};
 
 #[derive(Debug, Serialize)]
 pub struct EnvironmentCheck {
@@ -15,6 +17,7 @@ pub struct EnvironmentCheck {
     pub x11_connects: bool,
     pub xtest_version: Option<String>,
     pub screen_size: Option<(u16, u16)>,
+    pub portal: PortalCheck,
     pub commands: Vec<CommandCheck>,
     pub isolated_mode_ready: bool,
     pub notes: Vec<String>,
@@ -24,6 +27,27 @@ pub struct EnvironmentCheck {
 pub struct CommandCheck {
     pub name: String,
     pub path: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct PortalCheck {
+    pub desktop_portal_binary: Option<String>,
+    pub dbus_reachable: bool,
+    pub remote_desktop: PortalInterfaceCheck,
+    pub screen_cast: PortalInterfaceCheck,
+    pub screenshot: PortalInterfaceCheck,
+    pub input_capture: PortalInterfaceCheck,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct PortalInterfaceCheck {
+    pub available: bool,
+    pub version: Option<u32>,
+    pub available_device_types: Option<u32>,
+    pub available_source_types: Option<u32>,
+    pub available_cursor_modes: Option<u32>,
+    pub supported_capabilities: Option<u32>,
 }
 
 pub fn check() -> EnvironmentCheck {
@@ -38,6 +62,7 @@ pub fn check() -> EnvironmentCheck {
     let xtest_version = x11_control::check_xtest().ok();
     let screen_size = x11_control::screen_size().ok();
     let x11_connects = screen_size.is_some();
+    let portal = check_portal();
     let commands = [
         "x-terminal-emulator",
         "ptyxis",
@@ -50,6 +75,9 @@ pub fn check() -> EnvironmentCheck {
         "openbox",
         "fluxbox",
         "i3",
+        "gdbus",
+        "busctl",
+        "pipewire",
     ]
     .into_iter()
     .map(check_command)
@@ -79,10 +107,17 @@ pub fn check() -> EnvironmentCheck {
         );
     }
     if matches!(xdg_session_type.as_deref(), Some("wayland")) {
-        notes.push(
-            "The current desktop session reports Wayland; this harness requires X11 or an XWayland-compatible path for input synthesis."
-                .to_string(),
-        );
+        if portal.remote_desktop.available && portal.screen_cast.available {
+            notes.push(
+                "The current desktop session reports Wayland; use portal_start for native Wayland screen/input control."
+                    .to_string(),
+            );
+        } else {
+            notes.push(
+                "The current desktop session reports Wayland, but RemoteDesktop/ScreenCast portal support was not detected."
+                    .to_string(),
+            );
+        }
     }
     if xtest_version.is_none() {
         notes.push("XTEST is unavailable; keyboard and mouse synthesis will fail.".to_string());
@@ -101,6 +136,7 @@ pub fn check() -> EnvironmentCheck {
         x11_connects,
         xtest_version,
         screen_size,
+        portal,
         commands,
         isolated_mode_ready,
         notes,
@@ -108,12 +144,11 @@ pub fn check() -> EnvironmentCheck {
 }
 
 pub fn command_path(name: &str) -> Option<String> {
-    let output = Command::new("which").arg(name).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|value| !value.is_empty())
+    let path_var = env::var_os("PATH")?;
+    env::split_paths(&path_var)
+        .map(|dir| dir.join(name))
+        .find(is_executable)
+        .map(|path| path.display().to_string())
 }
 
 fn check_command(name: &str) -> CommandCheck {
@@ -143,4 +178,143 @@ fn xwayland_auth_candidates() -> Vec<String> {
         .collect::<Vec<_>>();
     candidates.sort();
     candidates
+}
+
+fn check_portal() -> PortalCheck {
+    let mut check = PortalCheck {
+        desktop_portal_binary: desktop_portal_binary(),
+        ..PortalCheck::default()
+    };
+
+    let Some(gdbus) = command_path("gdbus") else {
+        check.error = Some("gdbus is not available; cannot inspect xdg-desktop-portal".to_string());
+        return check;
+    };
+
+    let output = Command::new(gdbus)
+        .args([
+            "introspect",
+            "--session",
+            "--dest",
+            "org.freedesktop.portal.Desktop",
+            "--object-path",
+            "/org/freedesktop/portal/desktop",
+            "--only-properties",
+        ])
+        .output();
+
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            check.error = Some(format!("failed to run gdbus portal introspection: {error}"));
+            return check;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        check.error = Some(if stderr.is_empty() {
+            "xdg-desktop-portal introspection failed".to_string()
+        } else {
+            stderr
+        });
+        return check;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    check.dbus_reachable = true;
+    check.remote_desktop = parse_portal_interface(&text, "org.freedesktop.portal.RemoteDesktop");
+    check.screen_cast = parse_portal_interface(&text, "org.freedesktop.portal.ScreenCast");
+    check.screenshot = parse_portal_interface(&text, "org.freedesktop.portal.Screenshot");
+    check.input_capture = parse_portal_interface(&text, "org.freedesktop.portal.InputCapture");
+    check
+}
+
+fn parse_portal_interface(text: &str, name: &str) -> PortalInterfaceCheck {
+    let marker = format!("interface {name} {{");
+    let Some(start) = text.find(&marker) else {
+        return PortalInterfaceCheck::default();
+    };
+    let rest = &text[start + marker.len()..];
+    let end = rest
+        .find("\n  interface ")
+        .or_else(|| rest.find("\n};"))
+        .unwrap_or(rest.len());
+    let section = &rest[..end];
+
+    PortalInterfaceCheck {
+        available: true,
+        version: parse_u32_property(section, "version"),
+        available_device_types: parse_u32_property(section, "AvailableDeviceTypes"),
+        available_source_types: parse_u32_property(section, "AvailableSourceTypes"),
+        available_cursor_modes: parse_u32_property(section, "AvailableCursorModes"),
+        supported_capabilities: parse_u32_property(section, "SupportedCapabilities"),
+    }
+}
+
+fn parse_u32_property(section: &str, name: &str) -> Option<u32> {
+    section.lines().find_map(|line| {
+        let (_, value) = line.split_once(name)?;
+        let (_, value) = value.split_once('=')?;
+        let digits = value
+            .trim_start()
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        digits.parse().ok()
+    })
+}
+
+fn is_executable(path: &PathBuf) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+}
+
+fn desktop_portal_binary() -> Option<String> {
+    command_path("xdg-desktop-portal").or_else(|| {
+        ["/usr/libexec", "/usr/lib"]
+            .into_iter()
+            .map(|dir| PathBuf::from(dir).join("xdg-desktop-portal"))
+            .find(is_executable)
+            .map(|path| path.display().to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_portal_interface;
+
+    #[test]
+    fn parses_portal_interface_properties() {
+        let text = r#"
+node /org/freedesktop/portal/desktop {
+  interface org.freedesktop.portal.RemoteDesktop {
+    properties:
+      readonly u version = 2;
+      readonly u AvailableDeviceTypes = 7;
+  };
+  interface org.freedesktop.portal.ScreenCast {
+    properties:
+      readonly u version = 5;
+      readonly u AvailableSourceTypes = 7;
+      readonly u AvailableCursorModes = 7;
+  };
+};
+"#;
+
+        let remote = parse_portal_interface(text, "org.freedesktop.portal.RemoteDesktop");
+        assert!(remote.available);
+        assert_eq!(remote.version, Some(2));
+        assert_eq!(remote.available_device_types, Some(7));
+
+        let screencast = parse_portal_interface(text, "org.freedesktop.portal.ScreenCast");
+        assert!(screencast.available);
+        assert_eq!(screencast.available_source_types, Some(7));
+        assert_eq!(screencast.available_cursor_modes, Some(7));
+
+        let missing = parse_portal_interface(text, "org.freedesktop.portal.InputCapture");
+        assert!(!missing.available);
+    }
 }

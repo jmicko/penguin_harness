@@ -25,6 +25,7 @@ enum Command {
     FindWindows(FindWindowsArgs),
     WindowInfo(TargetArgs),
     ActiveWindow,
+    MoveResize(MoveResizeArgs),
     Launch(LaunchArgs),
     Terminal(TerminalArgs),
     Screenshot(TargetArgs),
@@ -114,6 +115,20 @@ struct TargetArgs {
     session_id: Option<String>,
     #[arg(long)]
     window_id: Option<WindowId>,
+}
+
+#[derive(Debug, Args)]
+struct MoveResizeArgs {
+    #[command(flatten)]
+    target: TargetArgs,
+    #[arg(long)]
+    x: Option<i32>,
+    #[arg(long)]
+    y: Option<i32>,
+    #[arg(long)]
+    width: u32,
+    #[arg(long)]
+    height: u32,
 }
 
 #[derive(Debug, Args)]
@@ -260,6 +275,16 @@ pub fn run() -> Result<()> {
         })?),
         Command::WindowInfo(args) => print_json(actions::window_info(args.into())?),
         Command::ActiveWindow => print_json(actions::active_window()?),
+        Command::MoveResize(args) => {
+            print_json(actions::move_resize_window(actions::MoveResizeRequest {
+                session_id: args.target.session_id,
+                window_id: args.target.window_id,
+                x: args.x,
+                y: args.y,
+                width: args.width,
+                height: args.height,
+            })?)
+        }
         Command::Launch(args) => print_json(actions::launch_app(LaunchRequest {
             command: args.command,
             mode: args.mode,

@@ -58,6 +58,16 @@ pub struct TargetRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct MoveResizeRequest {
+    pub session_id: Option<String>,
+    pub window_id: Option<WindowId>,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct WindowQuery {
     pub title_contains: Option<String>,
     pub pid: Option<u32>,
@@ -185,6 +195,22 @@ pub fn close_window(target: TargetRequest) -> Result<SimpleResult> {
             format!("requested close for {window_id}, but it is still present")
         },
     })
+}
+
+pub fn move_resize_window(request: MoveResizeRequest) -> Result<WindowInfo> {
+    if request.width == 0 || request.height == 0 {
+        bail!("width and height must be greater than zero");
+    }
+    let (window_id, _) = resolve_target(&TargetRequest {
+        session_id: request.session_id,
+        window_id: request.window_id,
+    })?;
+    let current = window::get_geometry(window_id)?;
+    let x = request.x.unwrap_or(current.x);
+    let y = request.y.unwrap_or(current.y);
+    window::move_resize_window(window_id, x, y, request.width, request.height)?;
+    thread::sleep(Duration::from_millis(200));
+    window::get_window_info(window_id)
 }
 
 pub fn type_text(target: TargetRequest, text: &str) -> Result<SimpleResult> {

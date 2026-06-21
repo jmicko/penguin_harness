@@ -75,6 +75,51 @@ pub fn close_window(window_id: WindowId) -> Result<()> {
     Ok(())
 }
 
+pub fn move_resize_window(
+    window_id: WindowId,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    let (conn, screen_num) = x11rb::connect(None).context("connect to X11 display")?;
+    let atoms = Atoms::load(&conn)?;
+    let root = conn.setup().roots[screen_num].root;
+
+    // _NET_MOVERESIZE_WINDOW uses bits 8-11 to mark x, y, width, and height
+    // as present in the client message payload.
+    let moveresize_flags = (1_u32 << 8) | (1_u32 << 9) | (1_u32 << 10) | (1_u32 << 11);
+    let event = ClientMessageEvent::new(
+        32,
+        window_id.0,
+        atoms.net_moveresize_window,
+        [moveresize_flags, x as u32, y as u32, width, height],
+    );
+    let _ = conn
+        .send_event(
+            false,
+            root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
+        )
+        .with_context(|| format!("send _NET_MOVERESIZE_WINDOW for {window_id}"))?
+        .check();
+
+    let _ = conn
+        .configure_window(
+            window_id.0,
+            &ConfigureWindowAux::new()
+                .x(x)
+                .y(y)
+                .width(width)
+                .height(height),
+        )
+        .with_context(|| format!("configure window {window_id}"))?
+        .check();
+    conn.flush()?;
+    Ok(())
+}
+
 pub fn get_geometry(window_id: WindowId) -> Result<Geometry> {
     let (conn, screen_num) = x11rb::connect(None).context("connect to X11 display")?;
     let geometry = conn
@@ -158,6 +203,7 @@ struct Atoms {
     net_client_list: Atom,
     net_active_window: Atom,
     net_close_window: Atom,
+    net_moveresize_window: Atom,
     net_wm_name: Atom,
     utf8_string: Atom,
     wm_name: Atom,
@@ -173,6 +219,7 @@ impl Atoms {
             net_client_list: intern(conn, b"_NET_CLIENT_LIST")?,
             net_active_window: intern(conn, b"_NET_ACTIVE_WINDOW")?,
             net_close_window: intern(conn, b"_NET_CLOSE_WINDOW")?,
+            net_moveresize_window: intern(conn, b"_NET_MOVERESIZE_WINDOW")?,
             net_wm_name: intern(conn, b"_NET_WM_NAME")?,
             utf8_string: intern(conn, b"UTF8_STRING")?,
             wm_name: AtomEnum::WM_NAME.into(),

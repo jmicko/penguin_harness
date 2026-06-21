@@ -1,4 +1,4 @@
-use crate::actions::{self, LaunchRequest, TargetRequest, WindowQuery};
+use crate::actions::{self, LaunchRequest, MoveResizeRequest, TargetRequest, WindowQuery};
 use crate::terminal::TerminalRequest;
 use crate::types::{MouseButton, WindowId};
 use anyhow::{Context, Result, anyhow};
@@ -22,9 +22,22 @@ struct ToolCall {
     arguments: Option<Value>,
 }
 
+struct McpState {
+    portal: crate::portal::PortalController,
+}
+
+impl McpState {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            portal: crate::portal::PortalController::new()?,
+        })
+    }
+}
+
 pub fn serve() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let mut state = McpState::new()?;
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -50,7 +63,7 @@ pub fn serve() -> Result<()> {
             "initialize" => initialize_result(request.params.as_ref()),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tool_definitions() })),
-            "tools/call" => call_tool(request.params),
+            "tools/call" => call_tool(request.params, &mut state),
             method => Err(json!({
                 "code": -32601,
                 "message": format!("unknown method {method}")
@@ -75,11 +88,11 @@ fn initialize_result(params: Option<&Value>) -> Result<Value, Value> {
             "name": "penguin_harness",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Linux desktop control over X11. Prefer isolated mode when available; real mode controls the user's active desktop. Take screenshots before and after GUI actions that change visible state. Coordinates are relative to the target window screenshot."
+        "instructions": "Linux desktop control. X11 tools control X11/Xwayland windows through XTEST/EWMH. Portal tools control Wayland desktops through xdg-desktop-portal RemoteDesktop/ScreenCast after the user approves the system permission prompt. Take screenshots before and after GUI actions that change visible state. X11 window coordinates are relative to the target window screenshot; portal screen coordinates are absolute screen pixels."
     }))
 }
 
-fn call_tool(params: Option<Value>) -> Result<Value, Value> {
+fn call_tool(params: Option<Value>, state: &mut McpState) -> Result<Value, Value> {
     let call: ToolCall = parse_params(params)?;
     let args = call.arguments.unwrap_or_else(|| json!({}));
     let outcome =
@@ -102,6 +115,17 @@ fn call_tool(params: Option<Value>) -> Result<Value, Value> {
             }
             "close_window" => typed::<TargetRequest>(args)
                 .and_then(|target| ok_text(actions::close_window(target)?)),
+            "move_resize_window" => typed::<MoveResizeRequest>(args)
+                .and_then(|request| ok_text(actions::move_resize_window(request)?)),
+            "portal_start" => ok_text_result(state.portal.start()),
+            "portal_status" => ok_text_result(state.portal.status()),
+            "portal_screenshot" => portal_screenshot_tool(args, &state.portal),
+            "portal_click_screen" => portal_click_screen_tool(args, &state.portal, false),
+            "portal_double_click_screen" => portal_click_screen_tool(args, &state.portal, true),
+            "portal_drag_screen" => portal_drag_screen_tool(args, &state.portal),
+            "portal_scroll_screen" => portal_scroll_screen_tool(args, &state.portal),
+            "portal_type_text" => portal_type_text_tool(args, &state.portal),
+            "portal_press_key" => portal_press_key_tool(args, &state.portal),
             "screenshot" => screenshot_tool(args),
             "screenshot_screen" => screenshot_screen_tool(args),
             "type_text" => type_text_tool(args),
@@ -266,6 +290,23 @@ fn screenshot_screen_tool(args: Value) -> Result<Value> {
     Ok(json!({ "content": content, "isError": false }))
 }
 
+fn portal_screenshot_tool(args: Value, portal: &crate::portal::PortalController) -> Result<Value> {
+    let args: ScreenScreenshotArgs = typed(args)?;
+    let result = portal.screenshot()?;
+    let text = serde_json::to_string_pretty(&result)?;
+    let mut content = vec![json!({ "type": "text", "text": text })];
+    if args.include_image {
+        let bytes = std::fs::read(&result.path)
+            .with_context(|| format!("read screenshot {}", result.path.display()))?;
+        content.push(json!({
+            "type": "image",
+            "mimeType": "image/png",
+            "data": base64::engine::general_purpose::STANDARD.encode(bytes)
+        }));
+    }
+    Ok(json!({ "content": content, "isError": false }))
+}
+
 fn type_text_tool(args: Value) -> Result<Value> {
     let args: TextArgs = typed(args)?;
     ok_text(actions::type_text(
@@ -320,6 +361,19 @@ fn click_screen_tool(args: Value, double: bool) -> Result<Value> {
     }
 }
 
+fn portal_click_screen_tool(
+    args: Value,
+    portal: &crate::portal::PortalController,
+    double: bool,
+) -> Result<Value> {
+    let args: ScreenClickArgs = typed(args)?;
+    if double {
+        ok_text(portal.double_click_screen(args.x, args.y, args.button)?)
+    } else {
+        ok_text(portal.click_screen(args.x, args.y, args.button)?)
+    }
+}
+
 fn drag_tool(args: Value) -> Result<Value> {
     let args: DragArgs = typed(args)?;
     ok_text(actions::drag(
@@ -346,6 +400,11 @@ fn drag_screen_tool(args: Value) -> Result<Value> {
     )?)
 }
 
+fn portal_drag_screen_tool(args: Value, portal: &crate::portal::PortalController) -> Result<Value> {
+    let args: ScreenDragArgs = typed(args)?;
+    ok_text(portal.drag_screen(args.x1, args.y1, args.x2, args.y2, args.button)?)
+}
+
 fn scroll_tool(args: Value) -> Result<Value> {
     let args: ScrollArgs = typed(args)?;
     ok_text(actions::scroll(
@@ -362,6 +421,24 @@ fn scroll_tool(args: Value) -> Result<Value> {
 fn scroll_screen_tool(args: Value) -> Result<Value> {
     let args: ScreenScrollArgs = typed(args)?;
     ok_text(actions::scroll_screen(args.x, args.y, args.amount)?)
+}
+
+fn portal_scroll_screen_tool(
+    args: Value,
+    portal: &crate::portal::PortalController,
+) -> Result<Value> {
+    let args: ScreenScrollArgs = typed(args)?;
+    ok_text(portal.scroll_screen(args.x, args.y, args.amount)?)
+}
+
+fn portal_type_text_tool(args: Value, portal: &crate::portal::PortalController) -> Result<Value> {
+    let args: ActiveTextArgs = typed(args)?;
+    ok_text(portal.type_text(&args.text)?)
+}
+
+fn portal_press_key_tool(args: Value, portal: &crate::portal::PortalController) -> Result<Value> {
+    let args: ActiveKeyArgs = typed(args)?;
+    ok_text(portal.press_key(&args.key)?)
 }
 
 fn close_tool(args: Value) -> Result<Value> {
@@ -507,6 +584,20 @@ fn tool_definitions() -> Vec<Value> {
             target_schema(),
         ),
         tool(
+            "move_resize_window",
+            "Move and resize a tracked session window or explicit window id.",
+            json!({
+                "type": "object",
+                "required": ["width", "height"],
+                "properties": target_properties(json!({
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "width": { "type": "integer", "minimum": 1 },
+                    "height": { "type": "integer", "minimum": 1 }
+                }))
+            }),
+        ),
+        tool(
             "screenshot",
             "Capture a target window. Coordinates for later actions are relative to this screenshot.",
             json!({
@@ -523,6 +614,92 @@ fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "include_image": { "type": "boolean", "default": false }
+                }
+            }),
+        ),
+        tool(
+            "portal_start",
+            "Start a Wayland RemoteDesktop/ScreenCast portal session. This normally shows a system permission prompt for the human to approve.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        tool(
+            "portal_status",
+            "Return the active Wayland portal session and selected screen stream metadata.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        tool(
+            "portal_screenshot",
+            "Capture the Wayland desktop through the screenshot portal. Coordinates for portal screen actions are absolute screen pixels.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "include_image": { "type": "boolean", "default": false }
+                }
+            }),
+        ),
+        tool(
+            "portal_click_screen",
+            "Click an absolute Wayland screen coordinate through the RemoteDesktop portal.",
+            screen_point_schema(),
+        ),
+        tool(
+            "portal_double_click_screen",
+            "Double-click an absolute Wayland screen coordinate through the RemoteDesktop portal.",
+            screen_point_schema(),
+        ),
+        tool(
+            "portal_drag_screen",
+            "Drag between two absolute Wayland screen coordinates through the RemoteDesktop portal.",
+            json!({
+                "type": "object",
+                "required": ["x1", "y1", "x2", "y2"],
+                "properties": {
+                    "x1": { "type": "integer" },
+                    "y1": { "type": "integer" },
+                    "x2": { "type": "integer" },
+                    "y2": { "type": "integer" },
+                    "button": { "type": "string", "enum": ["left", "middle", "right"], "default": "left" }
+                }
+            }),
+        ),
+        tool(
+            "portal_scroll_screen",
+            "Scroll at an absolute Wayland screen coordinate through the RemoteDesktop portal. Positive amount scrolls up; negative scrolls down.",
+            json!({
+                "type": "object",
+                "required": ["x", "y", "amount"],
+                "properties": {
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "amount": { "type": "integer" }
+                }
+            }),
+        ),
+        tool(
+            "portal_type_text",
+            "Type text through the Wayland RemoteDesktop portal into the currently focused surface.",
+            json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": { "type": "string" }
+                }
+            }),
+        ),
+        tool(
+            "portal_press_key",
+            "Press one key through the Wayland RemoteDesktop portal, such as Enter, Escape, Tab, Ctrl-C, Left, Right, F5.",
+            json!({
+                "type": "object",
+                "required": ["key"],
+                "properties": {
+                    "key": { "type": "string" }
                 }
             }),
         ),

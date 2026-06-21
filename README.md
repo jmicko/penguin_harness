@@ -1,18 +1,16 @@
 # Penguin Harness
 
-Linux/X11 desktop automation harness for Codex.
+Linux desktop automation harness for Codex.
 
 Penguin Harness exposes a small CLI and an MCP stdio server that can launch GUI apps, discover windows, take screenshots, focus windows, type, click, drag, scroll, and close windows. The main target is project-scoped Codex desktop use without installing an MCP server globally for every Codex session.
 
 ## Current Scope
 
-Penguin Harness is intentionally X11-first:
+Penguin Harness has two desktop-control paths:
 
-- Works best on X11 desktop sessions, including Linux Mint Cinnamon on X11.
-- Requires XTEST for keyboard and mouse synthesis.
-- Uses native X11 screenshot capture and writes PNG files directly.
-- Uses EWMH/NetWM X11 window-manager properties directly for desktop window listing, focusing, and close requests.
-- Wayland-only sessions are not a primary target yet because most Wayland compositors intentionally block global input injection.
+- X11/Xwayland tools use XTEST for keyboard and mouse synthesis, native X11 screenshot capture, and EWMH/NetWM window-manager properties for window listing, focusing, resizing, and close requests.
+- Wayland portal tools use `xdg-desktop-portal` RemoteDesktop/ScreenCast permission flow for compositor-approved full-desktop control. A human may need to approve the system prompt when `portal_start` runs.
+- Native Wayland windows are not visible to X11 tools. Use the `portal_*` tools for native Wayland apps.
 
 Run this first on a new machine:
 
@@ -20,7 +18,7 @@ Run this first on a new machine:
 penguin-harness check
 ```
 
-The check output reports `DISPLAY`, `XDG_SESSION_TYPE`, X11 connectivity, XTEST, screen size, required commands, and isolated-mode readiness.
+The check output reports `DISPLAY`, `XDG_SESSION_TYPE`, X11 connectivity, XTEST, screen size, portal interface availability, required commands, and isolated-mode readiness.
 
 ## Install
 
@@ -30,7 +28,7 @@ From this checkout, the recommended install is:
 ./scripts/install-user.sh
 ```
 
-Source installs need Rust plus a working system linker. On a fresh Ubuntu install:
+Source installs need Rust 1.87 or newer plus a working system linker. On a fresh Ubuntu install:
 
 ```bash
 sudo apt install build-essential
@@ -104,10 +102,11 @@ After installing a new binary version, restart the Codex session for that projec
 
 Required for real desktop control:
 
-- X11 session or a usable XWayland display exposed through `DISPLAY`
-- X11 auth through `XAUTHORITY` when the display requires it
-- XTEST extension
-- An EWMH-compatible X11 window manager for high-level window listing, focus, and close requests
+- For X11 tools: X11 session or a usable XWayland display exposed through `DISPLAY`
+- For X11 tools: X11 auth through `XAUTHORITY` when the display requires it
+- For X11 tools: XTEST extension
+- For X11 tools: an EWMH-compatible X11 window manager for high-level window listing, focus, resize, and close requests
+- For Wayland portal tools: `xdg-desktop-portal`, the compositor portal backend, and PipeWire. GNOME needs `xdg-desktop-portal-gnome`.
 
 Optional for isolated mode:
 
@@ -157,8 +156,18 @@ The server exposes:
 - `active_window`
 - `focus_window`
 - `close_window`
+- `move_resize_window`
 - `screenshot`
 - `screenshot_screen`
+- `portal_start`
+- `portal_status`
+- `portal_screenshot`
+- `portal_click_screen`
+- `portal_double_click_screen`
+- `portal_drag_screen`
+- `portal_scroll_screen`
+- `portal_type_text`
+- `portal_press_key`
 - `type_text`
 - `type_active`
 - `press_key`
@@ -176,19 +185,20 @@ The server exposes:
 ## Practical Codex Flow
 
 1. Start with `check_environment`.
-2. Use `list_sessions`, `list_windows`, `find_windows`, or `launch_app` to identify the target.
-3. Take a `screenshot` with `include_image: true`.
-4. Use screenshot-relative coordinates for clicks, drags, and scrolls.
-5. Verify visible state with another screenshot after each meaningful UI action.
-6. Use `close_window` for existing user apps and `close_session` for apps launched by the harness.
+2. On X11/Xwayland, use `list_sessions`, `list_windows`, `find_windows`, or `launch_app` to identify the target.
+3. On native Wayland, call `portal_start` and have the human approve the permission prompt.
+4. Take a `screenshot` or `portal_screenshot` with `include_image: true`.
+5. Use screenshot-relative coordinates for X11 window actions and absolute screen coordinates for portal actions.
+6. Verify visible state with another screenshot after each meaningful UI action.
+7. Use `close_window` for existing user apps and `close_session` for apps launched by the harness.
 
 ## Notes For Desktop Switching
 
 On a new computer or desktop environment, the first branch point is the session type:
 
 - `XDG_SESSION_TYPE=x11`: expected path; verify XTEST and EWMH behavior with `penguin-harness check` and `penguin-harness windows`.
-- `XDG_SESSION_TYPE=wayland` with `DISPLAY` and `XAUTHORITY` set: some XWayland windows may be controllable, but global desktop control is compositor-dependent.
-- `XDG_SESSION_TYPE=wayland` without `DISPLAY`: this harness will not control the desktop in its current form.
+- `XDG_SESSION_TYPE=wayland`: use `portal_start` for native Wayland desktop control. If `DISPLAY` and `XAUTHORITY` are also set, X11 tools may still control Xwayland apps.
+- `XDG_SESSION_TYPE=wayland` without portal support: native Wayland windows will not be controllable by this harness.
 
 GNOME on Wayland commonly runs Xwayland with an auth file like `/run/user/1000/.mutter-Xwaylandauth.*`. If `penguin-harness check` reports that `XAUTHORITY` is unset but lists an Xwayland auth candidate, launch Codex from the graphical terminal or export that file as `XAUTHORITY` for SSH-based testing.
 
